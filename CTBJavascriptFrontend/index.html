@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bitcoin Trading Simulator</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        /* General Body Styling */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f4f7fa;
+            color: #333;
+            margin: 0;
+            padding: 0;
+        }
+
+        h1 {
+            text-align: center;
+            color: #444;
+            margin: 20px 0;
+        }
+
+        #crypto-container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            padding: 20px;
+        }
+
+        /* Crypto Card Styling */
+        .crypto-card {
+            background-color: #fff;
+            border: 1px solid #ddd;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+            width: 100%;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .crypto-card h2 {
+            margin: 0;
+            color: #333;
+            font-size: 20px;
+            text-align: center;
+        }
+
+        /* Chart Styling */
+        .chart-container {
+            margin: 20px 0;
+            text-align: center;
+        }
+
+        .chart-container canvas {
+            max-width: 100%;
+            height: auto;
+        }
+
+        /* Controls Section */
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+
+        .controls label {
+            font-weight: 600;
+            margin-right: 10px;
+            align-self: center;
+        }
+
+        .controls select, .controls button {
+            padding: 8px 12px;
+            font-size: 14px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+            cursor: pointer;
+            outline: none;
+            transition: background-color 0.3s, border-color 0.3s;
+        }
+
+        .controls button {
+            background-color: #007bff;
+            color: #fff;
+            border: none;
+        }
+
+        .controls button:hover {
+            background-color: #0056b3;
+        }
+
+        .controls select:hover {
+            border-color: #007bff;
+        }
+
+        /* Results Section */
+        .result {
+            margin-top: 10px;
+            font-size: 14px;
+            text-align: center;
+            color: #555;
+        }
+
+        /* Controls Section (reused styles for new inputs) */
+        .controls label {
+            font-weight: 600;
+            margin-right: 10px;
+            align-self: center;
+        }
+
+        .controls select, .controls button, .controls input {
+            padding: 8px 12px;
+            font-size: 14px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+            cursor: pointer;
+            outline: none;
+            transition: background-color 0.3s, border-color 0.3s;
+        }
+
+        .controls button {
+            background-color: #007bff;
+            color: #fff;
+            border: none;
+        }
+
+        .controls button:hover {
+            background-color: #0056b3;
+        }
+
+        .controls select:hover, .controls input:hover {
+            border-color: #007bff;
+        }
+
+        /* Adjust margin for labels and inputs */
+        .controls input {
+            margin-bottom: 10px;
+        }
+
+        .controls label {
+            margin-bottom: 5px;
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .crypto-card {
+                padding: 15px;
+            }
+
+            .controls {
+                flex-direction: column;
+            }
+        }
+
+    </style>
+</head>
+<body>
+    <h1>Crypto Trading Simulator</h1>
+    <div id="crypto-container">
+        <!-- Rows for coins will be dynamically added here -->
+    </div>
+
+    <script>
+        const coins = ['BTCUSDT', 'ETHUSDT', 'AVAXUSDT', 'SOLUSDT', 'RENDERUSDT', 'FETUSDT'];
+        const charts = {};
+
+        // Generate rows dynamically for each coin
+        function createRow(coin) {
+            const container = document.getElementById('crypto-container');
+            const row = document.createElement('div');
+            row.className = 'crypto-card';
+            row.innerHTML = `
+                <h2>${coin}</h2>
+                <div class="chart-container">
+                    <canvas id="${coin}-chart"></canvas>
+                </div>
+                <div class="controls">
+                    <label for="${coin}-timeframe">Select Time Frame:</label>
+                    <select id="${coin}-timeframe">
+                        <option value="1d">1 Day</option>
+                        <option value="4h">4 Hours</option>
+                        <option value="1h" selected>1 Hour</option>
+                        <option value="15m">15 Minutes</option>
+                    </select>
+                    <button onclick="fetchAndDrawChart('${coin}')">Fetch Data</button>
+                </div>
+                <div class="controls">
+                    <label for="${coin}-strategy">Select Strategy:</label>
+                    <select id="${coin}-strategy" onchange="updateStrategyControls('${coin}')">
+                        <option value="sma">Simple Moving Average (SMA)</option>
+                        <option value="rsi">Relative Strength Index (RSI)</option>
+                        <option value="bollinger">Bollinger Bands</option>
+                        <option value="macd">Moving Average Convergence Divergence (MACD)</option>
+                    </select>
+                    <div id="${coin}-strategy-params"></div>
+                    <button onclick="simulate('${coin}')">Simulate</button>
+                </div>
+                <div id="${coin}-result" class="result"></div>
+            `;
+            container.appendChild(row);
+
+            const ctx = document.getElementById(`${coin}-chart`).getContext('2d');
+            charts[coin] = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: `${coin} Prices`,
+                        data: [],
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        borderWidth: 2,
+                    }],
+                },
+            });
+        }
+
+        // Fetch data for the selected coin and time frame
+        async function fetchAndDrawChart(coin) {
+            const timeframe = document.getElementById(`${coin}-timeframe`).value;
+            const data = await fetchData(coin, timeframe);
+            if (!data.length) return;
+
+            const chart = charts[coin];
+            chart.data.labels = data.map(d => d.x.toLocaleString());
+            chart.data.datasets[0].data = data.map(d => d.y);
+            chart.update();
+        }
+
+        async function fetchData(coin, timeframe) {
+            try {
+                const response = await fetch(`http://127.0.0.1:5000/fetch_data?symbol=${coin}&timeframe=${timeframe}`);
+                const data = await response.json();
+                return JSON.parse(data).map(d => ({
+                    x: new Date(d.timestamp),
+                    y: d.close,
+                }));
+            } catch (error) {
+                console.error(`Error fetching data for ${coin}:`, error);
+                return [];
+            }
+        }
+
+        // Simulate strategy for the selected coin
+        async function simulate(coin) {
+            const strategy = document.getElementById(`${coin}-strategy`).value;
+            const params = {};      
+
+            // Collect strategy-specific parameters
+            if (strategy === 'sma') {
+                params.window = parseInt(document.getElementById(`${coin}-sma-window`).value, 10);
+            } else if (strategy === 'rsi') {
+                params.low_threshold = parseInt(document.getElementById(`${coin}-rsi-low`).value, 10);
+                params.high_threshold = parseInt(document.getElementById(`${coin}-rsi-high`).value, 10);
+            } else if (strategy === 'bollinger') {
+                params.window = parseInt(document.getElementById(`${coin}-bollinger-window`).value, 10);
+                params.std_dev = parseFloat(document.getElementById(`${coin}-bollinger-std-dev`).value);
+            } else if (strategy === 'macd') {
+                params.short_window = parseInt(document.getElementById(`${coin}-macd-short`).value, 10);
+                params.long_window = parseInt(document.getElementById(`${coin}-macd-long`).value, 10);
+                params.signal_window = parseInt(document.getElementById(`${coin}-macd-signal`).value, 10);
+            }
+
+            try {
+                const response = await axios.post(
+                    'http://127.0.0.1:5000/simulate',
+                    { symbol: coin, strategy, params },
+                    { headers: { 'Content-Type': 'application/json' }, responseType: 'json' }
+                );
+
+                const result = response.data;
+                const simulateData = JSON.parse(result.data);
+
+                // Display the profit/loss, win rate, and balance
+                document.getElementById(`${coin}-result`).innerText = 
+                    `Profit/Loss: $${result.profit.toFixed(2)} | Win Rate: ${result.win_rate.toFixed(2)}% | Balance: $${result.balance.toFixed(2)}`;
+
+                const chart = charts[coin];
+                chart.data.datasets = [
+                    {
+                        label: `${coin} Prices`,
+                        data: simulateData.map(d => ({
+                            x: new Date(d.timestamp).toLocaleString(),
+                            y: d.close
+                        })),
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        borderWidth: 2,
+                        fill: false
+                    }
+                ];
+
+                // Add strategy-specific data to the chart
+                if (strategy === 'sma') {
+                    chart.data.datasets.push(
+                        {
+                            label: 'SMA Line',
+                            data: simulateData.map(d => ({
+                                x: new Date(d.timestamp).toLocaleString(),
+                                y: d.SMA
+                            })),
+                            borderColor: 'rgba(255, 206, 86, 1)',
+                            borderWidth: 2,
+                            fill: false,
+                        },
+                        {
+                            label: 'Buy Signals',
+                            data: simulateData.filter(d => d.Signal === 'Buy').map(d => ({
+                                x: new Date(d.timestamp).toLocaleString(),
+                                y: d.close
+                            })),
+                            borderColor: 'rgba(0, 255, 0, 1)',
+                            borderWidth: 1,
+                            pointStyle: 'circle',
+                            pointRadius: 5,
+                            fill: false,
+                            showLine: false
+                        },
+                        {
+                            label: 'Sell Signals',
+                            data: simulateData.filter(d => d.Signal === 'Sell').map(d => ({
+                                x: new Date(d.timestamp).toLocaleString(),
+                                y: d.close
+                            })),
+                            borderColor: 'rgba(255, 0, 0, 1)',
+                            borderWidth: 1,
+                            pointStyle: 'triangle',
+                            pointRadius: 5,
+                            fill: false,
+                            showLine: false
+                        }
+                    );
+                } else if (strategy === 'rsi') {
+                    chart.data.datasets.push(
+                        {
+                            label: 'RSI Values',
+                            data: simulateData.map(d => ({
+                                x: new Date(d.timestamp).toLocaleString(),
+                                y: d.RSI
+                            })),
+                            borderColor: 'rgba(153, 102, 255, 1)',
+                            borderWidth: 2,
+                            fill: false
+                        },
+                        {
+                            label: 'Overbought (70)',
+                            data: simulateData.map(d => ({
+                                x: new Date(d.timestamp).toLocaleString(),
+                                y: 70
+                            })),
+                            borderColor: 'rgba(255, 99, 132, 0.8)',
+                            borderDash: [5, 5],
+                            borderWidth: 1,
+                            fill: false
+                        },
+                        {
+                            label: 'Oversold (30)',
+                            data: simulateData.map(d => ({
+                                x: new Date(d.timestamp).toLocaleString(),
+                                y: 30
+                            })),
+                            borderColor: 'rgba(99, 255, 132, 0.8)',
+                            borderDash: [5, 5],
+                            borderWidth: 1,
+                            fill: false
+                        }
+                    );
+                } else if (strategy === 'bollinger') {
+                    chart.data.datasets.push(
+                        {
+                            label: 'Upper Band',
+                            data: simulateData.map(d => ({
+                                x: new Date(d.timestamp).toLocaleString(),
+                                y: d.Upper
+                            })),
+                            borderColor: 'rgba(255, 206, 86, 1)',
+                            borderWidth: 2,
+                            fill: false
+                        },
+                        {
+                            label: 'Lower Band',
+                            data: simulateData.map(d => ({
+                                x: new Date(d.timestamp).toLocaleString(),
+                                y: d.Lower
+                            })),
+                            borderColor: 'rgba(54, 162, 235, 1)',
+                            borderWidth: 2,
+                            fill: false
+                        },
+                        {
+                            label: 'Buy Signals',
+                            data: simulateData.filter(d => d.Signal === 'Buy').map(d => ({
+                                x: new Date(d.timestamp).toLocaleString(),
+                                y: d.close
+                            })),
+                            borderColor: 'rgba(0, 255, 0, 1)',
+                            borderWidth: 1,
+                            pointStyle: 'circle',
+                            pointRadius: 5,
+                            fill: false,
+                            showLine: false
+                        },
+                        {
+                            label: 'Sell Signals',
+                            data: simulateData.filter(d => d.Signal === 'Sell').map(d => ({
+                                x: new Date(d.timestamp).toLocaleString(),
+                                y: d.close
+                            })),
+                            borderColor: 'rgba(255, 0, 0, 1)',
+                            borderWidth: 1,
+                            pointStyle: 'triangle',
+                            pointRadius: 5,
+                            fill: false,
+                            showLine: false
+                        }
+                    );
+                } else if (strategy === 'macd') {
+                    chart.data.datasets.push(
+                        {
+                            label: 'MACD Line',
+                            data: simulateData.map(d => ({
+                                x: new Date(d.timestamp).toLocaleString(),
+                                y: d.MACD
+                            })),
+                            borderColor: 'rgba(255, 159, 64, 1)',
+                            borderWidth: 2,
+                            fill: false
+                        },
+                        {
+                            label: 'Signal Line',
+                            data: simulateData.map(d => ({
+                                x: new Date(d.timestamp).toLocaleString(),
+                                y: d.Signal_Line
+                            })),
+                            borderColor: 'rgba(75, 192, 192, 1)',
+                            borderWidth: 2,
+                            fill: false
+                        }
+                    );
+                }
+
+                chart.update(); // Refresh the chart to display new datasets
+            } catch (error) {
+                console.error(`Error simulating strategy for ${coin}:`, error);
+            }
+        }
+
+        function updateStrategyControls(coin) {
+            const strategy = document.getElementById(`${coin}-strategy`).value;
+            const paramsContainer = document.getElementById(`${coin}-strategy-params`);
+
+            let controlsHTML = '';
+            if (strategy === 'sma') {
+                controlsHTML = `
+                    <div class="controls">
+                        <label for="${coin}-sma-window">Window Size:</label>
+                        <input type="number" id="${coin}-sma-window" value="10" min="1">
+                    </div>
+                `;
+            } else if (strategy === 'rsi') {
+                controlsHTML = `
+                    <div class="controls">
+                        <label for="${coin}-rsi-low">Low Threshold:</label>
+                        <input type="number" id="${coin}-rsi-low" value="30" min="1">
+                    </div>
+                    <div class="controls">
+                        <label for="${coin}-rsi-high">High Threshold:</label>
+                        <input type="number" id="${coin}-rsi-high" value="70" min="1">
+                    </div>
+                `;
+            } else if (strategy === 'bollinger') {
+                controlsHTML = `
+                    <div class="controls">
+                        <label for="${coin}-bollinger-window">Window Size:</label>
+                        <input type="number" id="${coin}-bollinger-window" value="20" min="1">
+                    </div>
+                    <div class="controls">
+                        <label for="${coin}-bollinger-std-dev">Standard Deviation:</label>
+                        <input type="number" id="${coin}-bollinger-std-dev" value="2" step="0.1" min="0.1">
+                    </div>
+                `;
+            } else if (strategy === 'macd') {
+                controlsHTML = `
+                    <div class="controls">
+                        <label for="${coin}-macd-short">Short Window:</label>
+                        <input type="number" id="${coin}-macd-short" value="12" min="1">
+                    </div>
+                    <div class="controls">
+                        <label for="${coin}-macd-long">Long Window:</label>
+                        <input type="number" id="${coin}-macd-long" value="26" min="1">
+                    </div>
+                    <div class="controls">
+                        <label for="${coin}-macd-signal">Signal Window:</label>
+                        <input type="number" id="${coin}-macd-signal" value="9" min="1">
+                    </div>
+                `;
+            }
+
+            paramsContainer.innerHTML = controlsHTML;
+        }
+
+
+        // Initialize rows for all coins
+        coins.forEach(createRow);
+
+        const socket = io('http://127.0.0.1:5000');
+    
+        socket.on('price_update', (msg) => {
+            const realTimeData = msg.data.map(d => ({ x: new Date(d.timestamp), y: d.close }));
+            console.log(realTimeData);
+            // updateChart(realTimeData);
+        });
+    </script>
+</body>
+</html>
