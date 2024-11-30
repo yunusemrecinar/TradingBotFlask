@@ -21,13 +21,35 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 def handle_connect():
     print("Client connected!")
 
-# Emit real-time Bitcoin price data
-@socketio.on('fetch_real_time_data')
-def handle_realtime_data():
-    while True:
-        data = fetch_bitcoin_data()
-        socketio.emit('price_update', {'data': data.to_json(orient='records')})
-        time.sleep(5)  # Emit updates every 5 seconds
+@socketio.on('subscribe')
+def handle_subscribe(data):
+    coin = data.get('coin')
+    timeframe = data.get('timeframe', '1h')  # Default to 1 hour if not provided
+    if not coin:
+        print("No coin provided for subscription!")
+        return
+
+    print(f"Client subscribed to real-time updates for {coin} with timeframe {timeframe}")
+    try:
+        while True:
+            data = fetch_bitcoin_data(symbol=coin, timeframe=timeframe)
+            print(f"Fetched data for {coin}: {data.tail(1).to_dict('records')}")
+            socketio.emit(f'price_update_{coin}', {'data': data.to_json(orient='records')})
+            time.sleep(get_timeframe_interval_seconds(timeframe))
+    except Exception as e:
+        print(f"Error in real-time updates for {coin}: {e}")
+
+def get_timeframe_interval_seconds(timeframe):
+    # Map timeframes to seconds
+    timeframe_map = {
+        '1m': 60,
+        '5m': 300,
+        '15m': 900,
+        '1h': 3600,
+        '4h': 14400,
+        '1d': 86400
+    }
+    return timeframe_map.get(timeframe, 3600)  # Default to 1 hour
 
 # Binance API Setup
 api_key = config['api_key']

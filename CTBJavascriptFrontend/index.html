@@ -190,8 +190,13 @@
                         <option value="4h">4 Hours</option>
                         <option value="1h" selected>1 Hour</option>
                         <option value="15m">15 Minutes</option>
+                        <option value="5m">5 Minutes</option>
+                        <option value="1m">1 Minute</option>
                     </select>
                     <button onclick="fetchAndDrawChart('${coin}')">Fetch Data</button>
+                </div>
+                <div class="controls">
+                    <button id="${coin}-real-time" onclick="toggleRealTime('${coin}')">Enable Real-Time</button>
                 </div>
                 <div class="controls">
                     <label for="${coin}-strategy">Select Strategy:</label>
@@ -206,6 +211,7 @@
                 </div>
                 <div id="${coin}-result" class="result"></div>
             `;
+
             container.appendChild(row);
 
             const ctx = document.getElementById(`${coin}-chart`).getContext('2d');
@@ -232,6 +238,7 @@
             const chart = charts[coin];
             chart.data.labels = data.map(d => d.x.toLocaleString());
             chart.data.datasets[0].data = data.map(d => d.y);
+            console.log(chart.data);
             chart.update();
         }
 
@@ -511,12 +518,53 @@
         coins.forEach(createRow);
 
         const socket = io('http://127.0.0.1:5000');
-    
-        socket.on('price_update', (msg) => {
-            const realTimeData = msg.data.map(d => ({ x: new Date(d.timestamp), y: d.close }));
-            console.log(realTimeData);
-            // updateChart(realTimeData);
-        });
+        const realTimeSubscriptions = {};
+
+        function toggleRealTime(coin) {
+            const button = document.getElementById(`${coin}-real-time`);
+            const timeframe = document.getElementById(`${coin}-timeframe`).value; // Get selected timeframe
+            const isSubscribed = realTimeSubscriptions[coin];
+
+            if (isSubscribed) {
+                // Unsubscribe from real-time updates
+                console.log(`Unsubscribing from ${coin}`);
+                socket.off(`price_update_${coin}`);
+                button.innerText = 'Enable Real-Time';
+                realTimeSubscriptions[coin] = false;
+            } else {
+                // Subscribe to real-time updates with the selected timeframe
+                console.log(`Subscribing to real-time updates for ${coin} with timeframe ${timeframe}`);
+                socket.emit('subscribe', { coin, timeframe });
+
+                socket.on(`price_update_${coin}`, (msg) => {
+                    console.log(`Real-time data received for ${coin}:`, msg);
+                    const realTimeData = JSON.parse(msg.data);
+                    const chart = charts[coin];
+
+                    // Add new data points to the chart
+                    realTimeData.forEach((dataPoint) => {
+                        const timestamp = new Date(dataPoint.timestamp).toLocaleString();
+                        if (!chart.data.labels.includes(timestamp)) { // Avoid duplicates
+                            chart.data.labels.push(timestamp);
+                            chart.data.datasets[0].data.push(dataPoint.close);
+                        }
+                    });
+
+                    // Keep only the last 100 points (optional, for performance)
+                    const maxPoints = 100;
+                    if (chart.data.labels.length > maxPoints) {
+                        chart.data.labels = chart.data.labels.slice(-maxPoints);
+                        chart.data.datasets[0].data = chart.data.datasets[0].data.slice(-maxPoints);
+                    }
+
+                    chart.update();
+                });
+
+                button.innerText = 'Disable Real-Time';
+                realTimeSubscriptions[coin] = true;
+            }
+        }
+
     </script>
 </body>
 </html>
