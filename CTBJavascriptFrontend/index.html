@@ -209,7 +209,11 @@
                     <div id="${coin}-strategy-params"></div>
                     <button onclick="simulate('${coin}')">Simulate</button>
                 </div>
+                <div class="controls">
+                    <button onclick="backtest('${coin}')">Backtest</button>
+                </div>
                 <div id="${coin}-result" class="result"></div>
+                <div id="${coin}-backtest-result" class="result"></div>
             `;
 
             container.appendChild(row);
@@ -253,6 +257,96 @@
             } catch (error) {
                 console.error(`Error fetching data for ${coin}:`, error);
                 return [];
+            }
+        }
+
+        // Automatically run backtests for all strategies when the page loads
+        async function runBacktestsForCoin(coin) {
+            const timeframe = document.getElementById(`${coin}-timeframe`).value; // Default to 1-hour timeframe
+
+            try {
+                const response = await axios.post(
+                    'http://127.0.0.1:5000/backtest_all',
+                    { symbol: coin, timeframe },
+                    { headers: { 'Content-Type': 'application/json' }, responseType: 'json' }
+                );
+
+                const result = response.data;
+                const backtestResultContainer = document.getElementById(`${coin}-backtest-result`);
+
+                if (result.success) {
+                    const results = result.results;
+
+                    // Generate a detailed result display for all strategies
+                    let resultsHTML = `<h3>Backtest Results (${timeframe}):</h3>`;
+                    Object.keys(results).forEach(strategy => {
+                        const strategyResult = results[strategy];
+                        resultsHTML += `
+                            <div>
+                                <strong>${strategy.toUpperCase()}:</strong>
+                                Profit/Loss: $${strategyResult.profit.toFixed(2)},
+                                Win Rate: ${strategyResult.win_rate.toFixed(2)}%,
+                                Final Balance: $${strategyResult.final_balance.toFixed(2)}
+                            </div>
+                        `;
+                    });
+
+                    backtestResultContainer.innerHTML = resultsHTML;
+                } else {
+                    backtestResultContainer.innerHTML = `<p>Error: ${result.error}</p>`;
+                }
+            } catch (error) {
+                console.error(`Error fetching backtest results for ${coin}:`, error);
+                const backtestResultContainer = document.getElementById(`${coin}-backtest-result`);
+                backtestResultContainer.innerHTML = `<p>Error: ${error.message}</p>`;
+            }
+        }
+
+        // Backtest function
+        async function backtest(coin) {
+            const strategy = document.getElementById(`${coin}-strategy`).value;
+            const timeframe = document.getElementById(`${coin}-timeframe`).value;
+            const params = {}; // Collect strategy-specific parameters if needed
+
+            // Collect strategy-specific parameters
+            if (strategy === 'sma') {
+                params.window = parseInt(document.getElementById(`${coin}-sma-window`).value, 10);
+            } else if (strategy === 'rsi') {
+                params.low_threshold = parseInt(document.getElementById(`${coin}-rsi-low`).value, 10);
+                params.high_threshold = parseInt(document.getElementById(`${coin}-rsi-high`).value, 10);
+            } else if (strategy === 'bollinger') {
+                params.window = parseInt(document.getElementById(`${coin}-bollinger-window`).value, 10);
+                params.std_dev = parseFloat(document.getElementById(`${coin}-bollinger-std-dev`).value);
+            } else if (strategy === 'macd') {
+                params.short_window = parseInt(document.getElementById(`${coin}-macd-short`).value, 10);
+                params.long_window = parseInt(document.getElementById(`${coin}-macd-long`).value, 10);
+                params.signal_window = parseInt(document.getElementById(`${coin}-macd-signal`).value, 10);
+            }
+
+            try {
+                const response = await axios.post(
+                    'http://127.0.0.1:5000/backtest',
+                    { symbol: coin, strategy, params, timeframe },
+                    { headers: { 'Content-Type': 'application/json' }, responseType: 'json' }
+                );
+
+                const result = response.data;
+                const backtestResultContainer = document.getElementById(`${coin}-backtest-result`);
+
+                if (result.success) {
+                    backtestResultContainer.innerText = `
+                        Backtest Results:
+                        Profit/Loss: $${result.profit.toFixed(2)},
+                        Win Rate: ${result.win_rate.toFixed(2)}%,
+                        Final Balance: $${result.final_balance.toFixed(2)}
+                    `;
+                } else {
+                    backtestResultContainer.innerText = `Error: ${result.error}`;
+                }
+            } catch (error) {
+                console.error(`Error backtesting for ${coin}:`, error);
+                const backtestResultContainer = document.getElementById(`${coin}-backtest-result`);
+                backtestResultContainer.innerText = `Error: ${error.message}`;
             }
         }
 
@@ -514,8 +608,11 @@
         }
 
 
-        // Initialize rows for all coins
-        coins.forEach(createRow);
+        // Call runBacktestsForCoin automatically for each coin
+        coins.forEach(coin => {
+            createRow(coin); // Create UI row
+            runBacktestsForCoin(coin); // Automatically fetch backtest results
+        });
 
         const socket = io('http://127.0.0.1:5000');
         const realTimeSubscriptions = {};
