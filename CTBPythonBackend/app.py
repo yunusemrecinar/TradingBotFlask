@@ -24,7 +24,7 @@ def handle_connect():
 @socketio.on('subscribe')
 def handle_subscribe(data):
     coin = data.get('coin')
-    timeframe = data.get('timeframe', '1h')  # Default to 1 hour if not provided
+    timeframe = data.get('timeframe', '1m')  # Default to 1 minute if not provided
     if not coin:
         print("No coin provided for subscription!")
         return
@@ -38,6 +38,137 @@ def handle_subscribe(data):
             time.sleep(get_timeframe_interval_seconds(timeframe))
     except Exception as e:
         print(f"Error in real-time updates for {coin}: {e}")
+
+@socketio.on('simulate')
+def handle_simulate(data):
+    coin = data.get('coin', 'BTCUSDT')
+    strategy = data.get('strategy', 'sma')
+    params = data.get('params', {})
+    timeframe = data.get('timeframe', '1m')  # Default to 1-minute timeframe for real-time
+    try:
+        simulated_data = fetch_bitcoin_data(symbol=coin, timeframe=timeframe)
+        simulated_data = apply_strategy(strategy, simulated_data, params)
+        buy_sell_points = []
+        balance, positions = 10000, 0  # Initial balance and no positions
+        for i in range(1, len(simulated_data)):
+            signal = simulated_data['Signal'].iloc[i - 1]
+            price = simulated_data['close'].iloc[i]
+            timestamp = simulated_data['timestamp'].iloc[i]
+
+            if signal == 'Buy':
+                positions += balance / price  # Buy all with available balance
+                balance = 0
+                buy_sell_points.append({'type': 'Buy', 'price': price, 'timestamp': timestamp})
+            elif signal == 'Sell' and positions > 0:
+                balance += positions * price  # Sell all
+                positions = 0
+                buy_sell_points.append({'type': 'Sell', 'price': price, 'timestamp': timestamp})
+
+        socketio.emit(f'simulated_trades_{coin}', {'data': buy_sell_points})
+    except Exception as e:
+        print(f"Simulation error for {coin}: {e}")
+
+@socketio.on('real_time_backtest')
+def handle_real_time_backtest(data):
+    symbol = data.get('symbol', 'BTCUSDT')
+    strategy = data.get('strategy')
+    params = data.get('params', {})
+    balance = 10000  # Starting balance
+    positions = 0  # Starting positions
+    trades = []  # Log of trades
+
+    try:
+        while True:
+            # Fetch live price every few seconds
+            live_data = exchange.fetch_ticker(symbol)
+            current_price = live_data['last']  # Last traded price
+            timestamp = pd.Timestamp.now()
+
+            # Apply selected strategy
+            signal = None
+            if strategy == 'bollinger':
+                # Bollinger Bands Logic
+                window = params.get("window", 20)
+                std_dev = params.get("std_dev", 2)
+                historical_data = fetch_bitcoin_data(symbol, '1m')
+                sma = historical_data['close'].rolling(window=window).mean().iloc[-1]
+                std = historical_data['close'].rolling(window=window).std().iloc[-1]
+                upper_band = sma + (std_dev * std)
+                lower_band = sma - (std_dev * std)
+
+                if current_price < lower_band:
+                    signal = 'Buy'
+                elif current_price > upper_band:
+                    signal = 'Sell'
+
+            elif strategy == 'sma':
+                # Simple Moving Average (SMA) Logic
+                window = params.get("window", 10)
+                historical_data = fetch_bitcoin_data(symbol, '1m')
+                sma = historical_data['close'].rolling(window=window).mean().iloc[-1]
+
+                if current_price > sma:
+                    signal = 'Buy'
+                elif current_price < sma:
+                    signal = 'Sell'
+
+            elif strategy == 'rsi':
+                # Relative Strength Index (RSI) Logic
+                low_threshold = params.get("low_threshold", 45)
+                high_threshold = params.get("high_threshold", 55)
+                historical_data = fetch_bitcoin_data(symbol, '1m')
+                delta = historical_data['close'].diff()
+                gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+                rs = gain / loss
+                rsi = 100 - (100 / (1 + rs))
+
+                if rsi.iloc[-1] < low_threshold:
+                    signal = 'Buy'
+                elif rsi.iloc[-1] > high_threshold:
+                    signal = 'Sell'
+
+            elif strategy == 'macd':
+                # MACD Logic
+                short_window = params.get("short_window", 12)
+                long_window = params.get("long_window", 26)
+                signal_window = params.get("signal_window", 9)
+                historical_data = fetch_bitcoin_data(symbol, '1m')
+                ema_short = historical_data['close'].ewm(span=short_window, adjust=False).mean()
+                ema_long = historical_data['close'].ewm(span=long_window, adjust=False).mean()
+                macd = ema_short - ema_long
+                signal_line = macd.ewm(span=signal_window, adjust=False).mean()
+
+                if macd.iloc[-1] > signal_line.iloc[-1]:
+                    signal = 'Buy'
+                elif macd.iloc[-1] < signal_line.iloc[-1]:
+                    signal = 'Sell'
+
+            # Execute trades based on signal
+            if signal == 'Buy' and balance > 0:
+                quantity = balance / current_price
+                positions += quantity
+                balance = 0
+                trades.append({'type': 'Buy', 'price': current_price, 'timestamp': str(timestamp)})
+
+            elif signal == 'Sell' and positions > 0:
+                balance += positions * current_price
+                positions = 0
+                trades.append({'type': 'Sell', 'price': current_price, 'timestamp': str(timestamp)})
+
+            # Emit updates to the frontend
+            socketio.emit(f'real_time_backtest_{symbol}', {
+                'balance': balance,
+                'positions': positions,
+                'trades': trades,
+                'current_price': current_price,
+            })
+
+            # Wait for a shorter interval (e.g., 5-10 seconds)
+            time.sleep(5)
+
+    except Exception as e:
+        print(f"Error in real-time backtest: {e}")
 
 def get_timeframe_interval_seconds(timeframe):
     # Map timeframes to seconds
@@ -62,7 +193,7 @@ exchange = ccxt.binance({
 exchange.set_sandbox_mode(True)  # Enable Testnet Mode
 
 # Update fetch_bitcoin_data to use the specified time frame
-def fetch_bitcoin_data(symbol='BTCUSDT', timeframe='1h'):
+def fetch_bitcoin_data(symbol='BTCUSDT', timeframe='1m'):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=100)
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -75,8 +206,8 @@ def apply_strategy(strategy, data, params={}):
         data['SMA'] = data['close'].rolling(window=window).mean()
         data['Signal'] = np.where(data['close'] > data['SMA'], 'Buy', 'Sell')
     elif strategy == "rsi":
-        low_threshold = params.get("low_threshold", 30)  # Default RSI low threshold
-        high_threshold = params.get("high_threshold", 70)  # Default RSI high threshold
+        low_threshold = params.get("low_threshold", 45)  # Default RSI low threshold
+        high_threshold = params.get("high_threshold", 55)  # Default RSI high threshold
         delta = data['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -138,7 +269,7 @@ def backtest_all():
         strategies = ['sma', 'rsi', 'bollinger', 'macd']
         strategy_params = {
             'sma': {"window": 10},
-            'rsi': {"low_threshold": 30, "high_threshold": 70},
+            'rsi': {"low_threshold": 45, "high_threshold": 55},
             'bollinger': {"window": 20, "std_dev": 2},
             'macd': {"short_window": 12, "long_window": 26, "signal_window": 9},
         }

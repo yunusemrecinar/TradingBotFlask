@@ -150,6 +150,20 @@
             margin-bottom: 5px;
         }
 
+        #crypto-container .result {
+            max-height: 200px; /* Limit the height of the trade log */
+            overflow-y: auto;  /* Enable scrolling when content overflows */
+            padding: 10px;
+            background-color: #f9f9f9;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-top: 10px;
+            font-size: 14px;
+            color: #444;
+        }
+
+
         /* Responsive Design */
         @media (max-width: 768px) {
             .crypto-card {
@@ -212,6 +226,7 @@
                 <div class="controls">
                     <button onclick="backtest('${coin}')">Backtest</button>
                 </div>
+                <div id="${coin}-trade-log" class="result"></div>
                 <div id="${coin}-result" class="result"></div>
                 <div id="${coin}-backtest-result" class="result"></div>
             `;
@@ -278,7 +293,7 @@
                     const results = result.results;
 
                     // Generate a detailed result display for all strategies
-                    let resultsHTML = `<h3>Backtest Results (${timeframe}):</h3>`;
+                    let resultsHTML = `<h3>Backtest Results with Old Data (${timeframe}):</h3>`;
                     Object.keys(results).forEach(strategy => {
                         const strategyResult = results[strategy];
                         resultsHTML += `
@@ -303,59 +318,46 @@
         }
 
         // Backtest function
-        async function backtest(coin) {
+        function backtest(coin) {
             const strategy = document.getElementById(`${coin}-strategy`).value;
-            const timeframe = document.getElementById(`${coin}-timeframe`).value;
-            const params = {}; // Collect strategy-specific parameters if needed
+            const params = {}; // Collect strategy-specific parameters
 
-            // Collect strategy-specific parameters
-            if (strategy === 'sma') {
-                params.window = parseInt(document.getElementById(`${coin}-sma-window`).value, 10);
-            } else if (strategy === 'rsi') {
-                params.low_threshold = parseInt(document.getElementById(`${coin}-rsi-low`).value, 10);
-                params.high_threshold = parseInt(document.getElementById(`${coin}-rsi-high`).value, 10);
-            } else if (strategy === 'bollinger') {
+            // Collect parameters based on strategy
+            if (strategy === 'bollinger') {
                 params.window = parseInt(document.getElementById(`${coin}-bollinger-window`).value, 10);
                 params.std_dev = parseFloat(document.getElementById(`${coin}-bollinger-std-dev`).value);
-            } else if (strategy === 'macd') {
-                params.short_window = parseInt(document.getElementById(`${coin}-macd-short`).value, 10);
-                params.long_window = parseInt(document.getElementById(`${coin}-macd-long`).value, 10);
-                params.signal_window = parseInt(document.getElementById(`${coin}-macd-signal`).value, 10);
             }
 
-            try {
-                const response = await axios.post(
-                    'http://127.0.0.1:5000/backtest',
-                    { symbol: coin, strategy, params, timeframe },
-                    { headers: { 'Content-Type': 'application/json' }, responseType: 'json' }
-                );
+            // Emit real-time backtest event
+            socket.emit('real_time_backtest', { symbol: coin, strategy, params });
 
-                const result = response.data;
-                const backtestResultContainer = document.getElementById(`${coin}-backtest-result`);
+            // Listen for updates
+            socket.on(`real_time_backtest_${coin}`, (msg) => {
+                const tradeLog = document.getElementById(`${coin}-trade-log`);
 
-                if (result.success) {
-                    backtestResultContainer.innerText = `
-                        Backtest Results:
-                        Profit/Loss: $${result.profit.toFixed(2)},
-                        Win Rate: ${result.win_rate.toFixed(2)}%,
-                        Final Balance: $${result.final_balance.toFixed(2)}
-                    `;
-                } else {
-                    backtestResultContainer.innerText = `Error: ${result.error}`;
-                }
-            } catch (error) {
-                console.error(`Error backtesting for ${coin}:`, error);
-                const backtestResultContainer = document.getElementById(`${coin}-backtest-result`);
-                backtestResultContainer.innerText = `Error: ${error.message}`;
-            }
+                // Loop through trades and append them to the log
+                msg.trades.forEach(trade => {
+                    const log = document.createElement('div');
+                    log.innerText = `${trade.type} at $${trade.price.toFixed(2)} on ${new Date(trade.timestamp).toLocaleString()}`;
+                    tradeLog.appendChild(log);
+                });
+
+                // Scroll to the bottom of the log to show the latest trade
+                tradeLog.scrollTop = tradeLog.scrollHeight;
+
+                // Display balance
+                document.getElementById(`${coin}-result`).innerText = `Balance: $${msg.balance.toFixed(2)} | Positions: ${msg.positions}`;
+            });
         }
+
 
         // Simulate strategy for the selected coin
         async function simulate(coin) {
             const strategy = document.getElementById(`${coin}-strategy`).value;
-            const params = {};      
+            const params = {};
+            const timeframe = document.getElementById(`${coin}-timeframe`).value;
 
-            // Collect strategy-specific parameters
+            // Collect parameters based on strategy
             if (strategy === 'sma') {
                 params.window = parseInt(document.getElementById(`${coin}-sma-window`).value, 10);
             } else if (strategy === 'rsi') {
@@ -370,10 +372,11 @@
                 params.signal_window = parseInt(document.getElementById(`${coin}-macd-signal`).value, 10);
             }
 
+            // Fetch historical data and update the chart
             try {
                 const response = await axios.post(
                     'http://127.0.0.1:5000/simulate',
-                    { symbol: coin, strategy, params },
+                    { symbol: coin, strategy, params, timeframe },
                     { headers: { 'Content-Type': 'application/json' }, responseType: 'json' }
                 );
 
@@ -451,10 +454,10 @@
                             fill: false
                         },
                         {
-                            label: 'Overbought (70)',
+                            label: 'Overbought (55)',
                             data: simulateData.map(d => ({
                                 x: new Date(d.timestamp).toLocaleString(),
-                                y: 70
+                                y: 55
                             })),
                             borderColor: 'rgba(255, 99, 132, 0.8)',
                             borderDash: [5, 5],
@@ -462,10 +465,10 @@
                             fill: false
                         },
                         {
-                            label: 'Oversold (30)',
+                            label: 'Oversold (45)',
                             data: simulateData.map(d => ({
                                 x: new Date(d.timestamp).toLocaleString(),
-                                y: 30
+                                y: 45
                             })),
                             borderColor: 'rgba(99, 255, 132, 0.8)',
                             borderDash: [5, 5],
@@ -546,12 +549,46 @@
                         }
                     );
                 }
+                // Add additional strategy-specific chart data as necessary
+                chart.update();
 
-                chart.update(); // Refresh the chart to display new datasets
+                // Real-time simulation setup
+                socket.emit('simulate', { coin, strategy, params, timeframe });
+
+                // Listen for real-time trade signals
+                socket.on(`simulated_trades_${coin}`, (msg) => {
+                    const tradeLog = document.getElementById(`${coin}-trade-log`);
+                    tradeLog.innerHTML = ''; // Clear existing logs
+
+                    msg.data.forEach(trade => {
+                        const log = document.createElement('div');
+                        log.innerText = `${trade.type} at $${trade.price.toFixed(2)} on ${new Date(trade.timestamp).toLocaleString()}`;
+                        tradeLog.appendChild(log);
+
+                        // Update the chart with real-time buy/sell points
+                        chart.data.datasets.push({
+                            label: `${trade.type} Signal`,
+                            data: [{
+                                x: new Date(trade.timestamp).toLocaleString(),
+                                y: trade.price
+                            }],
+                            borderColor: trade.type === 'Buy' ? 'rgba(0, 255, 0, 1)' : 'rgba(255, 0, 0, 1)',
+                            borderWidth: 1,
+                            pointStyle: trade.type === 'Buy' ? 'circle' : 'triangle',
+                            pointRadius: 5,
+                            fill: false,
+                            showLine: false
+                        });
+
+                        chart.update();
+                    });
+                });
             } catch (error) {
                 console.error(`Error simulating strategy for ${coin}:`, error);
+                document.getElementById(`${coin}-result`).innerText = `Error: ${error.message}`;
             }
         }
+
 
         function updateStrategyControls(coin) {
             const strategy = document.getElementById(`${coin}-strategy`).value;
@@ -569,11 +606,11 @@
                 controlsHTML = `
                     <div class="controls">
                         <label for="${coin}-rsi-low">Low Threshold:</label>
-                        <input type="number" id="${coin}-rsi-low" value="30" min="1">
+                        <input type="number" id="${coin}-rsi-low" value="45" min="1">
                     </div>
                     <div class="controls">
                         <label for="${coin}-rsi-high">High Threshold:</label>
-                        <input type="number" id="${coin}-rsi-high" value="70" min="1">
+                        <input type="number" id="${coin}-rsi-high" value="55" min="1">
                     </div>
                 `;
             } else if (strategy === 'bollinger') {
@@ -606,7 +643,6 @@
 
             paramsContainer.innerHTML = controlsHTML;
         }
-
 
         // Call runBacktestsForCoin automatically for each coin
         coins.forEach(coin => {
