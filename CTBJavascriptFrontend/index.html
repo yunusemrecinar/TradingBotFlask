@@ -179,6 +179,7 @@
 </head>
 <body>
     <h1>Crypto Trading Simulator</h1>
+    <button onclick="window.location.href='/backtests.html'">View Backtest Results</button>
     <div id="crypto-container">
         <!-- Rows for coins will be dynamically added here -->
     </div>
@@ -228,7 +229,6 @@
                 </div>
                 <div id="${coin}-trade-log" class="result"></div>
                 <div id="${coin}-result" class="result"></div>
-                <div id="${coin}-backtest-result" class="result"></div>
             `;
 
             container.appendChild(row);
@@ -320,7 +320,7 @@
         // Backtest function
         function backtest(coin) {
             const strategy = document.getElementById(`${coin}-strategy`).value;
-            const params = {}; // Collect strategy-specific parameters
+            const params = {};
 
             // Collect parameters based on strategy
             if (strategy === 'bollinger') {
@@ -328,28 +328,47 @@
                 params.std_dev = parseFloat(document.getElementById(`${coin}-bollinger-std-dev`).value);
             }
 
+            console.log(`Starting backtest for ${coin} with strategy: ${strategy}, params:`, params);
+
             // Emit real-time backtest event
             socket.emit('real_time_backtest', { symbol: coin, strategy, params });
 
-            // Listen for updates
+            // Keep track of existing trades
+            let cumulativeTrades = {};
+
             socket.on(`real_time_backtest_${coin}`, (msg) => {
+                console.log(`Backtest results received for ${coin}:`, msg);
+
+                // Ensure the coin has a trades list
+                if (!cumulativeTrades[coin]) {
+                    cumulativeTrades[coin] = [];
+                }
+
+                // Merge new trades with cumulative trades
+                const newTrades = msg.trades.filter(trade => 
+                    !cumulativeTrades[coin].some(existingTrade => existingTrade.timestamp === trade.timestamp)
+                );
+                cumulativeTrades[coin] = [...cumulativeTrades[coin], ...newTrades];
+
+                // Update the trade log display
                 const tradeLog = document.getElementById(`${coin}-trade-log`);
 
-                // Loop through trades and append them to the log
-                msg.trades.forEach(trade => {
+                // Append new trades to the log
+                newTrades.forEach(trade => {
                     const log = document.createElement('div');
                     log.innerText = `${trade.type} at $${trade.price.toFixed(2)} on ${new Date(trade.timestamp).toLocaleString()}`;
                     tradeLog.appendChild(log);
                 });
 
-                // Scroll to the bottom of the log to show the latest trade
+                // Scroll to the latest trade
                 tradeLog.scrollTop = tradeLog.scrollHeight;
 
-                // Display balance
-                document.getElementById(`${coin}-result`).innerText = `Balance: $${msg.balance.toFixed(2)} | Positions: ${msg.positions}`;
+                // Display balance and positions
+                document.getElementById(`${coin}-result`).innerText = 
+                    `Balance: $${msg.balance.toFixed(2)} | Positions: ${msg.positions}`;
             });
-        }
 
+        }
 
         // Simulate strategy for the selected coin
         async function simulate(coin) {
@@ -647,7 +666,6 @@
         // Call runBacktestsForCoin automatically for each coin
         coins.forEach(coin => {
             createRow(coin); // Create UI row
-            runBacktestsForCoin(coin); // Automatically fetch backtest results
         });
 
         const socket = io('http://127.0.0.1:5000');
@@ -655,39 +673,35 @@
 
         function toggleRealTime(coin) {
             const button = document.getElementById(`${coin}-real-time`);
-            const timeframe = document.getElementById(`${coin}-timeframe`).value; // Get selected timeframe
             const isSubscribed = realTimeSubscriptions[coin];
 
             if (isSubscribed) {
-                // Unsubscribe from real-time updates
+                // Unsubscribe
                 console.log(`Unsubscribing from ${coin}`);
                 socket.off(`price_update_${coin}`);
                 button.innerText = 'Enable Real-Time';
                 realTimeSubscriptions[coin] = false;
             } else {
-                // Subscribe to real-time updates with the selected timeframe
-                console.log(`Subscribing to real-time updates for ${coin} with timeframe ${timeframe}`);
-                socket.emit('subscribe', { coin, timeframe });
+                // Subscribe
+                console.log(`Subscribing to 1-second real-time updates for ${coin}`);
+                socket.emit('subscribe', { coin });
 
-                socket.on(`price_update_${coin}`, (msg) => {
-                    console.log(`Real-time data received for ${coin}:`, msg);
-                    const realTimeData = JSON.parse(msg.data);
+                socket.on(`price_update_${(""+coin).toLowerCase()}`, (msg) => {
+                    console.log(`1-second price update for ${coin}:`, msg);
+
                     const chart = charts[coin];
+                    const timestamp = new Date(msg.timestamp).toLocaleString();
+                    const price = msg.price;
 
-                    // Add new data points to the chart
-                    realTimeData.forEach((dataPoint) => {
-                        const timestamp = new Date(dataPoint.timestamp).toLocaleString();
-                        if (!chart.data.labels.includes(timestamp)) { // Avoid duplicates
-                            chart.data.labels.push(timestamp);
-                            chart.data.datasets[0].data.push(dataPoint.close);
-                        }
-                    });
+                    // Add new data point to the chart
+                    chart.data.labels.push(timestamp);
+                    chart.data.datasets[0].data.push(price);
 
-                    // Keep only the last 100 points (optional, for performance)
+                    // Keep the last 100 points for performance
                     const maxPoints = 100;
                     if (chart.data.labels.length > maxPoints) {
-                        chart.data.labels = chart.data.labels.slice(-maxPoints);
-                        chart.data.datasets[0].data = chart.data.datasets[0].data.slice(-maxPoints);
+                        chart.data.labels.shift();
+                        chart.data.datasets[0].data.shift();
                     }
 
                     chart.update();
@@ -697,6 +711,7 @@
                 realTimeSubscriptions[coin] = true;
             }
         }
+
 
     </script>
 </body>

@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Backtest Results</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f4f7fa;
+            color: #333;
+            margin: 0;
+            padding: 0;
+        }
+
+        h1 {
+            text-align: center;
+            margin: 20px;
+        }
+
+        .chart-container {
+            margin: 20px auto;
+            max-width: 800px;
+        }
+
+        .result-summary {
+            text-align: center;
+            margin: 10px 0;
+            font-size: 14px;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+    <h1>Backtest Results</h1>
+    <div id="charts-container"></div>
+    <script>
+        const coins = ['BTCUSDT', 'ETHUSDT', 'AVAXUSDT', 'SOLUSDT', 'RENDERUSDT', 'FETUSDT'];
+        const strategies = ['sma', 'rsi', 'bollinger', 'macd'];
+
+        // Fetch backtest results and create charts
+        async function fetchAndRenderBacktests() {
+            const container = document.getElementById('charts-container');
+
+            for (const coin of coins) {
+                for (const strategy of strategies) {
+                    try {
+                        const response = await axios.post('http://127.0.0.1:5000/backtest', {
+                            symbol: coin,
+                            strategy: strategy,
+                            params: {}, // Default parameters
+                            timeframe: '1h',
+                        });
+
+                        const { data } = response;
+
+                        if (data.success) {
+                            const chartDiv = document.createElement('div');
+                            chartDiv.className = 'chart-container';
+                            chartDiv.innerHTML = `
+                                <canvas id="${coin}-${strategy}-chart"></canvas>
+                                <div id="${coin}-${strategy}-results" class="result-summary"></div>
+                            `;
+                            container.appendChild(chartDiv);
+
+                            const chartData = JSON.parse(data.data);
+                            renderChart(`${coin}-${strategy}-chart`, coin, strategy, chartData);
+
+                            // Display results summary
+                            const profit = data.profit.toFixed(2);
+                            const winRate = (data.win_rate).toFixed(2);
+                            const finalBalance = data.final_balance.toFixed(2);
+                            const resultsDiv = document.getElementById(`${coin}-${strategy}-results`);
+                            resultsDiv.innerHTML = `
+                                <strong>${coin} (${strategy.toUpperCase()}) Results:</strong><br>
+                                Final Balance: $${finalBalance}<br>
+                                Total Profit/Loss: $${profit}<br>
+                                Win Rate: ${winRate}%
+                            `;
+                        } else {
+                            console.error(`Error fetching backtest results for ${coin} - ${strategy}:`, data.error);
+                        }
+                    } catch (error) {
+                        console.error(`Request failed for ${coin} - ${strategy}:`, error);
+                    }
+                }
+            }
+        }
+
+        // Render Chart.js chart
+        function renderChart(canvasId, coin, strategy, chartData) {
+            const ctx = document.getElementById(canvasId).getContext('2d');
+            const buySignals = chartData.filter(d => d.Signal === 'Buy');
+            const sellSignals = chartData.filter(d => d.Signal === 'Sell');
+
+            console.log({buySignals: buySignals, sellSignals: sellSignals});
+
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: chartData.map(d => new Date(d.timestamp).toLocaleString()),
+                    datasets: [
+                        {
+                            label: `${coin} Prices (${strategy})`,
+                            data: chartData.map(d => d.close),
+                            borderColor: 'rgba(75, 192, 192, 1)',
+                            borderWidth: 2,
+                        },
+                        {
+                            label: 'Buy Signals',
+                            data: buySignals.map(d => ({ x: new Date(d.timestamp), y: d.close })),
+                            borderColor: 'rgba(0, 255, 0, 1)',
+                            borderWidth: 1,
+                            pointStyle: 'circle',
+                            pointRadius: 5,
+                            showLine: false,
+                        },
+                        {
+                            label: 'Sell Signals',
+                            data: sellSignals.map(d => ({ x: new Date(d.timestamp), y: d.close })),
+                            borderColor: 'rgba(255, 0, 0, 1)',
+                            borderWidth: 1,
+                            pointStyle: 'triangle',
+                            pointRadius: 5,
+                            showLine: false,
+                        },
+                    ],
+                },
+            });
+        }
+
+
+        fetchAndRenderBacktests();
+    </script>
+</body>
+</html>

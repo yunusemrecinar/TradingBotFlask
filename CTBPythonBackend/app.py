@@ -6,9 +6,15 @@ import numpy as np
 from flask_socketio import SocketIO
 import time
 import json
+import asyncio
+import websockets
+from threading import Lock
+import threading
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
+
+price_data_lock = Lock()
 
 # Load API key and secret from config.json
 with open('config.json', 'r') as file:
@@ -21,23 +27,49 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 def handle_connect():
     print("Client connected!")
 
+# Binance WebSocket endpoint
+BINANCE_WS_URL = "wss://stream.binance.com:9443/ws"
+# Store aggregated trade data
+price_data = {}
+
+async def subscribe_binance_ws(symbol, interval):
+    global price_data
+    async with websockets.connect(f"{BINANCE_WS_URL}/{symbol}@trade") as ws:
+        last_emit_time = time.time()
+        while True:
+            try:
+                message = await ws.recv()
+                trade = json.loads(message)
+                price = float(trade['p'])  # Trade price
+                timestamp = time.time()
+
+                # Aggregate trades into 5-second buckets
+                if symbol not in price_data:
+                    price_data[symbol] = []
+
+                price_data[symbol].append(price)
+
+                if timestamp - last_emit_time >= interval:
+                    # Calculate aggregated price (e.g., average) for the bucket
+                    avg_price = sum(price_data[symbol]) / len(price_data[symbol])
+                    price_data[symbol] = []  # Reset bucket
+                    last_emit_time = timestamp
+
+                    # Emit the aggregated price to the frontend
+                    socketio.emit(f'price_update_{symbol}', {'price': avg_price, 'timestamp': int(timestamp * 1000)})
+                    print(f"Emitted 5-second average price for {symbol}: {avg_price}")
+            except Exception as e:
+                print(f"WebSocket error: {e}")
+                break
+
+
 @socketio.on('subscribe')
 def handle_subscribe(data):
-    coin = data.get('coin')
-    timeframe = data.get('timeframe', '1m')  # Default to 1 minute if not provided
-    if not coin:
-        print("No coin provided for subscription!")
-        return
+    symbol = data.get('coin', 'btcusdt').lower()
+    interval = 1  # Set 1-second interval
+    print(f"Subscribing to {symbol} updates at {interval}-second intervals")
 
-    print(f"Client subscribed to real-time updates for {coin} with timeframe {timeframe}")
-    try:
-        while True:
-            data = fetch_bitcoin_data(symbol=coin, timeframe=timeframe)
-            print(f"Fetched data for {coin}: {data.tail(1).to_dict('records')}")
-            socketio.emit(f'price_update_{coin}', {'data': data.to_json(orient='records')})
-            time.sleep(get_timeframe_interval_seconds(timeframe))
-    except Exception as e:
-        print(f"Error in real-time updates for {coin}: {e}")
+    asyncio.run(subscribe_binance_ws(symbol, interval))
 
 @socketio.on('simulate')
 def handle_simulate(data):
@@ -77,6 +109,9 @@ def handle_real_time_backtest(data):
     positions = 0  # Starting positions
     trades = []  # Log of trades
 
+    # Keep trades list persistent
+    persistent_trades = []
+
     try:
         while True:
             # Fetch live price every few seconds
@@ -86,22 +121,7 @@ def handle_real_time_backtest(data):
 
             # Apply selected strategy
             signal = None
-            if strategy == 'bollinger':
-                # Bollinger Bands Logic
-                window = params.get("window", 20)
-                std_dev = params.get("std_dev", 2)
-                historical_data = fetch_bitcoin_data(symbol, '1m')
-                sma = historical_data['close'].rolling(window=window).mean().iloc[-1]
-                std = historical_data['close'].rolling(window=window).std().iloc[-1]
-                upper_band = sma + (std_dev * std)
-                lower_band = sma - (std_dev * std)
-
-                if current_price < lower_band:
-                    signal = 'Buy'
-                elif current_price > upper_band:
-                    signal = 'Sell'
-
-            elif strategy == 'sma':
+            if strategy == 'sma':
                 # Simple Moving Average (SMA) Logic
                 window = params.get("window", 10)
                 historical_data = fetch_bitcoin_data(symbol, '1m')
@@ -112,55 +132,24 @@ def handle_real_time_backtest(data):
                 elif current_price < sma:
                     signal = 'Sell'
 
-            elif strategy == 'rsi':
-                # Relative Strength Index (RSI) Logic
-                low_threshold = params.get("low_threshold", 45)
-                high_threshold = params.get("high_threshold", 55)
-                historical_data = fetch_bitcoin_data(symbol, '1m')
-                delta = historical_data['close'].diff()
-                gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-                rs = gain / loss
-                rsi = 100 - (100 / (1 + rs))
-
-                if rsi.iloc[-1] < low_threshold:
-                    signal = 'Buy'
-                elif rsi.iloc[-1] > high_threshold:
-                    signal = 'Sell'
-
-            elif strategy == 'macd':
-                # MACD Logic
-                short_window = params.get("short_window", 12)
-                long_window = params.get("long_window", 26)
-                signal_window = params.get("signal_window", 9)
-                historical_data = fetch_bitcoin_data(symbol, '1m')
-                ema_short = historical_data['close'].ewm(span=short_window, adjust=False).mean()
-                ema_long = historical_data['close'].ewm(span=long_window, adjust=False).mean()
-                macd = ema_short - ema_long
-                signal_line = macd.ewm(span=signal_window, adjust=False).mean()
-
-                if macd.iloc[-1] > signal_line.iloc[-1]:
-                    signal = 'Buy'
-                elif macd.iloc[-1] < signal_line.iloc[-1]:
-                    signal = 'Sell'
-
             # Execute trades based on signal
             if signal == 'Buy' and balance > 0:
                 quantity = balance / current_price
                 positions += quantity
                 balance = 0
-                trades.append({'type': 'Buy', 'price': current_price, 'timestamp': str(timestamp)})
-
+                new_trade = {'type': 'Buy', 'price': current_price, 'timestamp': str(timestamp)}
+                persistent_trades.append(new_trade)
             elif signal == 'Sell' and positions > 0:
                 balance += positions * current_price
                 positions = 0
-                trades.append({'type': 'Sell', 'price': current_price, 'timestamp': str(timestamp)})
+                new_trade = {'type': 'Sell', 'price': current_price, 'timestamp': str(timestamp)}
+                persistent_trades.append(new_trade)
 
-            # Emit updates to the frontend
+            # Emit cumulative trades to the frontend
             socketio.emit(f'real_time_backtest_{symbol}', {
                 'balance': balance,
                 'positions': positions,
-                'trades': trades,
+                'trades': persistent_trades,  # Send all trades
                 'current_price': current_price,
             })
 
@@ -169,6 +158,7 @@ def handle_real_time_backtest(data):
 
     except Exception as e:
         print(f"Error in real-time backtest: {e}")
+
 
 def get_timeframe_interval_seconds(timeframe):
     # Map timeframes to seconds
@@ -194,7 +184,7 @@ exchange.set_sandbox_mode(True)  # Enable Testnet Mode
 
 # Update fetch_bitcoin_data to use the specified time frame
 def fetch_bitcoin_data(symbol='BTCUSDT', timeframe='1m'):
-    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=100)
+    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=120)
     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     return df
@@ -232,6 +222,18 @@ def apply_strategy(strategy, data, params={}):
         data['MACD'] = data['EMA12'] - data['EMA26']
         data['Signal_Line'] = data['MACD'].ewm(span=signal_window, adjust=False).mean()
         data['Signal'] = np.where(data['MACD'] > data['Signal_Line'], 'Buy', 'Sell')
+
+    # Enforce sequential Buy/Sell logic
+    has_bought = False
+    for i in range(len(data)):
+        if not has_bought and data['Signal'].iloc[i] == 'Buy':
+            has_bought = True
+        elif has_bought and data['Signal'].iloc[i] == 'Sell':
+            has_bought = False
+        else:
+            # If the condition is not met, reset the signal to Hold
+            data.at[i, 'Signal'] = 'Hold'
+
     return data
 
 
@@ -257,6 +259,16 @@ def simulate():
         "balance": balance,
         "data": data.to_json(orient='records')
     })
+
+@app.route('/backtest/<strategy>', methods=['GET'])
+def backtest_strategy(strategy):
+    symbol = request.args.get('symbol', 'BTCUSDT')
+    timeframe = request.args.get('timeframe', '1h')
+    params = request.json.get('params', {})
+    data = fetch_bitcoin_data(symbol, timeframe)
+    data = apply_strategy(strategy, data, params)
+    return jsonify(data.to_json(orient='records'))
+
 
 @app.route('/backtest_all', methods=['POST'])
 def backtest_all():
